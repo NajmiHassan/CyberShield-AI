@@ -2,3 +2,4 @@ node_modules
 dist
 .env
 fireworks-integration-brief.md
+.claude/
