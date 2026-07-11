@@ -362,6 +362,13 @@ export default function CyberShieldAI() {
   const [result, setResult] = useState(null);
   const [activeRule, setActiveRule] = useState(null);
   const [scanLines, setScanLines] = useState([]);
+  const [user, setUser] = useState(null);
+  const [authMode, setAuthMode] = useState("signup");
+  const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
+  const [authMessage, setAuthMessage] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyItems, setHistoryItems] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const timers = useRef([]);
 
   const reduce = typeof window !== "undefined" &&
@@ -382,6 +389,75 @@ export default function CyberShieldAI() {
     setResult(null);
     setActiveRule(null);
     setScanLines([]);
+  };
+
+  const handleAuthSubmit = async (event) => {
+    event.preventDefault();
+    setAuthMessage("");
+
+    const endpoint = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+    const payload = authMode === "login"
+      ? { email: authForm.email, password: authForm.password }
+      : authForm;
+
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAuthMessage(data.error || "Authentication failed");
+        return;
+      }
+      setUser(data.user);
+      setAuthForm({ name: "", email: "", password: "" });
+      setAuthMessage(data.message || "Account ready");
+    } catch (error) {
+      setAuthMessage("Unable to reach authentication service");
+    }
+  };
+
+  const openHistory = async () => {
+    if (!user) {
+      setAuthMessage("Sign in or create an account to view saved history");
+      setAuthMode("login");
+      setHistoryOpen(false);
+      return;
+    }
+
+    setHistoryOpen(true);
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/history/${user.user_id}`);
+      const data = await res.json();
+      setHistoryItems(data.history || []);
+    } catch (error) {
+      setHistoryItems([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const saveHistoryEntry = async (analysis, text) => {
+    if (!user) return;
+
+    try {
+      await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user.user_id,
+          searchText: text,
+          threatType: analysis.threatType,
+          riskScore: analysis.score,
+          confidence: analysis.confidence
+        })
+      });
+    } catch (error) {
+      console.warn("Unable to save history", error);
+    }
   };
 
   const run = async () => {
@@ -414,6 +490,7 @@ export default function CyberShieldAI() {
     const [r] = await Promise.all([analyze(input), minAnimation]);
 
     setResult(r);
+    await saveHistoryEntry(r, input);
     setScanLines((p) => [
       ...p,
       { line: `Verdict: ${r.threatType.toUpperCase()}  ·  risk ${r.score}/100`, last: true }
@@ -485,8 +562,85 @@ export default function CyberShieldAI() {
                 <button onClick={() => loadSample("phishing")}>Phishing</button>
                 <button onClick={() => loadSample("scam")}>Scam</button>
                 <button onClick={() => loadSample("safe")}>Legit</button>
+                <button className="cs-history-btn" onClick={openHistory}>History</button>
               </div>
             </div>
+
+            <div className="cs-auth-card">
+              <div className="cs-auth-header">
+                <div className="cs-eyebrow"><Lock size={13} /> Account access</div>
+                <div className="cs-auth-toggle">
+                  <button className={authMode === "signup" ? "active" : ""} onClick={() => setAuthMode("signup")}>Sign up</button>
+                  <button className={authMode === "login" ? "active" : ""} onClick={() => setAuthMode("login")}>Login</button>
+                </div>
+              </div>
+              {user ? (
+                <div className="cs-user-card">
+                  <div>
+                    <div className="cs-user-card-name">{user.name}</div>
+                    <div className="cs-user-card-meta">{user.email}</div>
+                    <div className="cs-user-card-meta">ID: {user.user_id}</div>
+                  </div>
+                </div>
+              ) : (
+                <form className="cs-auth-form" onSubmit={handleAuthSubmit}>
+                  {authMode === "signup" && (
+                    <input
+                      className="cs-auth-input"
+                      value={authForm.name}
+                      onChange={(e) => setAuthForm((prev) => ({ ...prev, name: e.target.value }))}
+                      placeholder="Full name"
+                    />
+                  )}
+                  <input
+                    className="cs-auth-input"
+                    type="email"
+                    value={authForm.email}
+                    onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
+                    placeholder="Email address"
+                  />
+                  <input
+                    className="cs-auth-input"
+                    type="password"
+                    value={authForm.password}
+                    onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
+                    placeholder="Password"
+                  />
+                  <button className="cs-auth-submit" type="submit">
+                    {authMode === "signup" ? "Create account" : "Sign in"}
+                  </button>
+                </form>
+              )}
+              {authMessage && <div className="cs-auth-message">{authMessage}</div>}
+            </div>
+
+            {historyOpen && (
+              <div className="cs-history-card">
+                <div className="cs-history-head">
+                  <div className="cs-eyebrow"><Clock size={13} /> Search history</div>
+                  <button className="cs-ghost cs-history-close" onClick={() => setHistoryOpen(false)}>Close</button>
+                </div>
+                {historyLoading ? (
+                  <div className="cs-history-empty">Loading your history…</div>
+                ) : historyItems.length === 0 ? (
+                  <div className="cs-history-empty">No searches saved for this account yet.</div>
+                ) : (
+                  <ul className="cs-history-list">
+                    {historyItems.map((item) => (
+                      <li key={item.id} className="cs-history-item">
+                        <div className="cs-history-top">
+                          <strong>{item.search_text}</strong>
+                          <span>{item.created_at}</span>
+                        </div>
+                        <div className="cs-history-meta">
+                          Threat: {item.threat_type || "—"} · Risk: {item.risk_score ?? "—"} · Confidence: {item.confidence ?? "—"}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
 
             {sender && (
               <div className="cs-sender">
@@ -729,6 +883,29 @@ const CSS = `
 .cs-mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
 .cs-glow{position:absolute;inset:0;pointer-events:none;
   background:radial-gradient(600px 300px at 22% 8%, rgba(87,182,224,.06), transparent 70%);}
+
+/* auth + history */
+.cs-auth-card{margin:12px 0 0;padding:14px;border:1px solid var(--border);border-radius:14px;background:rgba(11,18,30,.5);}
+.cs-auth-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;}
+.cs-auth-toggle{display:flex;gap:8px;}
+.cs-auth-toggle button{border:1px solid var(--border);background:transparent;color:var(--mut);border-radius:999px;padding:5px 9px;cursor:pointer;}
+.cs-auth-toggle button.active{background:rgba(87,182,224,.16);color:var(--ink);border-color:var(--border2);} 
+.cs-auth-form{display:flex;flex-direction:column;gap:8px;}
+.cs-auth-input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:rgba(9,15,26,.75);color:var(--ink);} 
+.cs-auth-submit{padding:9px 12px;border:0;border-radius:10px;background:linear-gradient(135deg,#6FD0F2,#3E9AC9);color:#08111d;font-weight:700;cursor:pointer;} 
+.cs-auth-message{margin-top:10px;color:#8EE2C3;font-size:12px;} 
+.cs-user-card{display:flex;align-items:center;justify-content:space-between;padding:8px 0;} 
+.cs-user-card-name{font-weight:700;} 
+.cs-user-card-meta{font-size:12px;color:var(--mut);} 
+.cs-history-btn{border:1px solid var(--border);background:rgba(11,18,30,.6);color:var(--ink);padding:6px 10px;border-radius:999px;cursor:pointer;} 
+.cs-history-card{margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:14px;background:rgba(11,18,30,.55);} 
+.cs-history-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;} 
+.cs-history-close{padding:6px 10px;border-radius:999px;} 
+.cs-history-empty{font-size:12px;color:var(--mut);} 
+.cs-history-list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px;} 
+.cs-history-item{padding:10px;border:1px solid var(--border2);border-radius:10px;background:rgba(9,15,26,.6);} 
+.cs-history-top{display:flex;justify-content:space-between;gap:8px;font-size:12px;margin-bottom:4px;} 
+.cs-history-meta{font-size:11px;color:var(--mut);} 
 
 /* top bar */
 .cs-top{position:relative;z-index:2;display:flex;align-items:center;gap:18px;

@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import { SYSTEM_PROMPT, THREAT_SCHEMA, FEW_SHOT } from "./prompt.js";
+import { registerUser, loginUser, saveSearchHistory, getUserHistory } from "./db.js";
 
 const PORT = process.env.PORT || 3001;
 const FIREWORKS_API_KEY = process.env.FIREWORKS_API_KEY;
@@ -13,6 +14,35 @@ if (!FIREWORKS_API_KEY) {
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
+
+app.post("/api/auth/register", (req, res) => {
+  const result = registerUser(req.body || {});
+  if (!result.ok) {
+    return res.status(400).json(result);
+  }
+  return res.status(201).json(result);
+});
+
+app.post("/api/auth/login", (req, res) => {
+  const result = loginUser(req.body || {});
+  if (!result.ok) {
+    return res.status(401).json(result);
+  }
+  return res.json(result);
+});
+
+app.post("/api/history", (req, res) => {
+  const result = saveSearchHistory(req.body || {});
+  if (!result.ok) {
+    return res.status(400).json(result);
+  }
+  return res.status(201).json(result);
+});
+
+app.get("/api/history/:userId", (req, res) => {
+  const history = getUserHistory(req.params.userId);
+  return res.json({ user_id: req.params.userId, history });
+});
 
 app.post("/api/analyze", async (req, res) => {
   const message = (req.body && req.body.message ? String(req.body.message) : "").trim();
