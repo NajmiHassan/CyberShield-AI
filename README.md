@@ -2,7 +2,7 @@
 
 An analyst workspace for triaging suspicious email and messages. You paste a message, run the analysis, and get back a threat verdict: what kind of threat it is, a risk score from 0 to 100, the exact phrases that triggered the verdict, and a short list of recommended actions.
 
-The classification is done by a language model (DeepSeek V4 Flash, served through Fireworks) that returns a strict JSON verdict. If that call fails for any reason, the app falls back to a local rule-based engine so it always returns something.
+The classification is done by a language model (DeepSeek V4 Flash, served through Fireworks) that returns a strict JSON verdict. That draft verdict is then reviewed by a second, independent model on the same Fireworks account (Llama 3.3 70B Instruct), acting as a judge — it can correct the classification, risk score, or indicators before the result is shown. If either call fails for any reason, the app falls back gracefully (judge failure → the draft verdict is used as-is; total API failure → a local rule-based engine takes over), so it always returns something.
 
 <img src="docs/screenshot.png" alt="CyberShield AI interface" width="100%" />
 
@@ -21,11 +21,11 @@ The interface ships with three sample messages (a phishing email, a payout scam,
 
 ## How it works
 
-The important design decision is that the API key never touches the browser. The React app only ever calls its own `/api/analyze` endpoint. That endpoint runs on the server, adds the system prompt and JSON schema, and calls Fireworks with the key read from an environment variable.
+The important design decision is that the API key never touches the browser. The React app only ever calls its own `/api/analyze` endpoint. That endpoint runs on the server, adds the system prompt and JSON schema, and calls Fireworks twice — once for the draft, once for the judge — with the same key read from an environment variable.
 
 ```
-Browser (React)                Server                       Fireworks
----------------                ------                       ---------
+Browser (React)                Server                                 Fireworks
+---------------                ------                                 ---------
 paste message
 click Analyze
   |
@@ -38,11 +38,23 @@ click Analyze
                                |
                                |  POST /chat/completions
                                |  model: deepseek-v4-flash
-                               v
-                                                      returns strict
-                                                      JSON verdict
+                               |-------------------------------------->
+                                                                  returns draft
+                                                                  JSON verdict
+                               |<--------------------------------------
+                        sends message + draft
+                        to the judge prompt
                                |
-                        parses and returns JSON
+                               |  POST /chat/completions
+                               |  model: llama-v3p3-70b-instruct
+                               |-------------------------------------->
+                                                                  reviews draft,
+                                                                  returns final
+                                                                  JSON verdict
+                               |<--------------------------------------
+                        returns the judge's verdict
+                        (or the draft, if the judge
+                        call fails)
   |
   v
 adapts JSON to the UI shape,
@@ -53,8 +65,9 @@ renders verdict + highlights
 A few details worth knowing:
 
 - **Snippet positions are found on the client, not returned by the model.** The model returns the exact suspicious substring. The client then searches the original text to locate it and highlight it. Models are unreliable at counting character offsets, so this keeps the highlighting accurate.
-- **The response is schema-enforced.** The request uses Fireworks structured outputs (`response_format: json_schema`), so the model is constrained to the exact JSON shape the UI expects. Fields, enums, and required keys are validated by the API.
-- **The rule engine is a fallback, not the primary path.** The original regex-based detection lives on as `heuristicAnalyze()`. It runs only when the API call fails (network error, timeout, bad key, or malformed response), so a demo never ends on a blank screen.
+- **Both calls are schema-enforced.** The draft and judge requests both use Fireworks structured outputs (`response_format: json_schema`), so each model is constrained to the exact JSON shape the UI expects. Fields, enums, and required keys are validated by the API itself.
+- **The judge is a second model, not a second opinion shown side-by-side.** DeepSeek's draft verdict is passed to Llama 3.3 70B along with the original message; the UI only ever displays the judge's final verdict. If that second call fails, times out, or errors, the DeepSeek draft is used as-is — the judge step is a quality pass, not a hard dependency.
+- **The rule engine is the last-resort fallback.** The original regex-based detection lives on as `heuristicAnalyze()`. It runs only when the `/api/analyze` call fails outright (network error, timeout, bad key, or malformed response), so a demo never ends on a blank screen.
 
 ## Project structure
 
@@ -78,7 +91,7 @@ CyberShield AI/
 ## Requirements
 
 - Node.js 18 or newer (the backend uses the built-in `fetch`).
-- A Fireworks API key.
+- A Fireworks API key. It's used for both the draft call and the judge call — no second provider needed.
 
 ## Setup
 
@@ -91,10 +104,10 @@ CyberShield AI/
 2. Create a `.env` file in the project root with your Fireworks key:
 
    ```
-   FIREWORKS_API_KEY=your_key_here
+   FIREWORKS_API_KEY=your_fireworks_key_here
    ```
 
-   The variable has no `VITE_` prefix on purpose. That keeps it server-only, so it is never bundled into the frontend. `.env` is git-ignored.
+   The variable has no `VITE_` prefix, on purpose. That keeps it server-only, so it is never bundled into the frontend. `.env` is git-ignored.
 
 ## Running it
 
@@ -147,15 +160,17 @@ To see the fallback in action, stop the backend and analyze a message in the UI.
 
 | Setting | Value | Where |
 |---------|-------|-------|
-| Model | `accounts/fireworks/models/deepseek-v4-flash` | `server/index.js`, `api/analyze.js` |
-| Endpoint | `https://api.fireworks.ai/inference/v1/chat/completions` | same |
-| Temperature | `0.15` | same |
-| Max tokens | `1200` | same |
+| Draft model | `accounts/fireworks/models/deepseek-v4-flash` | `server/index.js`, `api/analyze.js` |
+| Judge model | `accounts/fireworks/models/llama-v3p3-70b-instruct` | same |
+| Endpoint (both calls) | `https://api.fireworks.ai/inference/v1/chat/completions` | same |
+| Draft temperature | `0.15` | same |
+| Judge temperature | `0.1` | same |
+| Max tokens | `1200` | both calls |
 | Backend port (dev) | `3001` | `server/index.js`, overridable with `PORT` |
 
-The system prompt, the JSON schema, and the few-shot examples all live in `server/prompt.js`. Edit them there and both the Express and Vercel endpoints pick up the change.
+The system prompt, the judge prompt, the JSON schema, and the few-shot examples all live in `server/prompt.js`. Edit them there and both the Express and Vercel endpoints pick up the change.
 
 ## Notes
 
-- Costs per analysis are small. A single email is a short prompt, and DeepSeek V4 Flash is inexpensive per token.
+- Costs per analysis are small, but each request now makes two model calls (draft + judge) instead of one — factor that into any rate or cost estimates.
 - This is a triage aid, not a final authority. It helps an analyst see evidence quickly. It does not replace a review of anything genuinely uncertain.
