@@ -67,7 +67,7 @@ export default async function handler(req, res) {
 
     const data = await r.json();
     console.log(
-      `[cybershield] Fireworks OK — model=${data.model} tokens=` +
+      `[cybershield] Fireworks OK | model=${data.model} tokens=` +
       `${data.usage?.prompt_tokens}/${data.usage?.completion_tokens}/${data.usage?.total_tokens}`
     );
 

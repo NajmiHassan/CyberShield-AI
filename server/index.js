@@ -60,7 +60,7 @@ app.post("/api/analyze", async (req, res) => {
 
     const data = await r.json();
     console.log(
-      `[cybershield] Fireworks call OK — model=${data.model} tokens(prompt/completion/total)=` +
+      `[cybershield] Fireworks call OK | model=${data.model} tokens(prompt/completion/total)=` +
       `${data.usage?.prompt_tokens}/${data.usage?.completion_tokens}/${data.usage?.total_tokens}`
     );
     const content = data?.choices?.[0]?.message?.content;
